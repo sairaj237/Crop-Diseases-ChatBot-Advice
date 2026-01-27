@@ -3,25 +3,51 @@ import timm
 import mlflow
 import mlflow.pytorch
 from torch import nn, optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
+from torchvision import datasets, transforms
 from pathlib import Path
 
-DATA_DIR = Path("data/processed")
+DATA_DIR = Path("data/raw")
 MODEL_DIR = Path("models/model")
 
 BATCH_SIZE = 32
 EPOCHS = 10
 LR = 1e-4
+VAL_SPLIT = 0.2
+SEED = 42
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-train_ds = torch.load(DATA_DIR / "train.pt")
-val_ds = torch.load(DATA_DIR / "val.pt")
+# Transforms (same as notebook)
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(15),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
+# Dataset
+full_ds = datasets.ImageFolder(DATA_DIR, transform=transform)
+
+val_size = int(len(full_ds) * VAL_SPLIT)
+train_size = len(full_ds) - val_size
+
+train_ds, val_ds = random_split(
+    full_ds,
+    [train_size, val_size],
+    generator=torch.Generator().manual_seed(SEED)
+)
 
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
 
-num_classes = len(train_ds.dataset.classes)
+num_classes = len(full_ds.classes)
 
+# Model
 model = timm.create_model(
     "efficientnet_b0",
     pretrained=True,
@@ -31,6 +57,7 @@ model = timm.create_model(
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=LR)
 
+# MLflow
 mlflow.start_run(run_name="efficientnet_b0")
 
 mlflow.log_param("epochs", EPOCHS)
@@ -48,9 +75,7 @@ for epoch in range(EPOCHS):
         optimizer.step()
 
     model.eval()
-    correct = 0
-    total = 0
-
+    correct, total = 0, 0
     with torch.no_grad():
         for x, y in val_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
@@ -67,4 +92,4 @@ torch.save(model.state_dict(), MODEL_DIR / "model.pth")
 mlflow.pytorch.log_model(model, "model")
 mlflow.end_run()
 
-print("Training complete.")
+print("Training complete. Model saved.")
