@@ -1,28 +1,42 @@
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms
+from sklearn.metrics import accuracy_score, precision_score, recall_score
 import timm
+import numpy as np
 import mlflow
 import mlflow.pytorch
-from torch import nn, optim
-from torch.utils.data import DataLoader, random_split
-from torchvision import datasets, transforms
 from pathlib import Path
 
-DATA_DIR = Path("data/raw")
+# ------------------
+# CONFIG
+# ------------------
+DATA_DIR = Path("data/processed")
 MODEL_DIR = Path("models/model")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 EPOCHS = 10
 LR = 1e-4
-VAL_SPLIT = 0.2
-SEED = 42
+NUM_CLASSES = 5
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Transforms (same as notebook)
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+
+# ------------------
+# TRANSFORMS
+# ------------------
+train_transform = transforms.Compose([
+    transforms.RandomResizedCrop(224, scale=(0.6, 1.0)),
     transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(15),
+    transforms.RandomRotation(10),
+    transforms.ColorJitter(
+        brightness=0.2,
+        contrast=0.2,
+        saturation=0.15,
+        hue=0.02
+    ),
     transforms.ToTensor(),
     transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -30,66 +44,136 @@ transform = transforms.Compose([
     )
 ])
 
-# Dataset
-full_ds = datasets.ImageFolder(DATA_DIR, transform=transform)
+val_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
 
-val_size = int(len(full_ds) * VAL_SPLIT)
-train_size = len(full_ds) - val_size
+# ------------------
+# DATASETS
+# ------------------
+train_ds = datasets.ImageFolder(DATA_DIR / "train", transform=train_transform)
+val_ds = datasets.ImageFolder(DATA_DIR / "val", transform=val_transform)
 
-train_ds, val_ds = random_split(
-    full_ds,
-    [train_size, val_size],
-    generator=torch.Generator().manual_seed(SEED)
+# ------------------
+# BALANCED SAMPLER
+# ------------------
+targets = np.array(train_ds.targets)
+class_counts = np.bincount(targets)
+class_weights = 1.0 / class_counts
+
+sample_weights = class_weights[targets]
+sampler = WeightedRandomSampler(
+    weights=sample_weights,
+    num_samples=len(sample_weights),
+    replacement=True
 )
 
-train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
+train_loader = DataLoader(
+    train_ds,
+    batch_size=BATCH_SIZE,
+    sampler=sampler
+)
 
-num_classes = len(full_ds.classes)
+val_loader = DataLoader(
+    val_ds,
+    batch_size=BATCH_SIZE,
+    shuffle=False
+)
 
-# Model
+# ------------------
+# MODEL (RESNET18)
+# ------------------
 model = timm.create_model(
-    "efficientnet_b0",
+    "resnet18",
     pretrained=True,
-    num_classes=num_classes
+    num_classes=NUM_CLASSES
+)
+model.to(DEVICE)
+
+# ------------------
+# LOSS (CLASS WEIGHTED)
+# ------------------
+loss_weights = torch.tensor(
+    class_weights, dtype=torch.float
 ).to(DEVICE)
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=LR)
+criterion = nn.CrossEntropyLoss(weight=loss_weights)
+optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
-# MLflow
-mlflow.start_run(run_name="efficientnet_b0")
+# ------------------
+# TRAINING
+# ------------------
+mlflow.set_experiment("sugarcane-disease")
 
-mlflow.log_param("epochs", EPOCHS)
-mlflow.log_param("batch_size", BATCH_SIZE)
-mlflow.log_param("lr", LR)
+with mlflow.start_run(run_name="resnet18_balanced"):
+    mlflow.log_params({
+        "model": "resnet18",
+        "epochs": EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "lr": LR,
+        "balanced_sampler": True,
+        "class_weighted_loss": True
+    })
 
-for epoch in range(EPOCHS):
-    model.train()
-    for x, y in train_loader:
-        x, y = x.to(DEVICE), y.to(DEVICE)
+    for epoch in range(EPOCHS):
+        model.train()
+        train_loss = 0.0
 
-        optimizer.zero_grad()
-        loss = criterion(model(x), y)
-        loss.backward()
-        optimizer.step()
-
-    model.eval()
-    correct, total = 0, 0
-    with torch.no_grad():
-        for x, y in val_loader:
+        for x, y in train_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
-            preds = model(x).argmax(dim=1)
-            correct += (preds == y).sum().item()
-            total += y.size(0)
 
-    val_acc = correct / total
-    mlflow.log_metric("val_accuracy", val_acc, step=epoch)
+            optimizer.zero_grad()
+            out = model(x)
+            loss = criterion(out, y)
+            loss.backward()
+            optimizer.step()
 
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
-torch.save(model.state_dict(), MODEL_DIR / "model.pth")
+            train_loss += loss.item()
 
-mlflow.pytorch.log_model(model, "model")
-mlflow.end_run()
+        # ------------------
+        # VALIDATION
+        # ------------------
+        model.eval()
+        y_true, y_pred = [], []
 
-print("Training complete. Model saved.")
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(DEVICE), y.to(DEVICE)
+                out = model(x)
+                preds = out.argmax(dim=1)
+
+                y_true.extend(y.cpu().numpy())
+                y_pred.extend(preds.cpu().numpy())
+
+        acc = accuracy_score(y_true, y_pred)
+        precision = precision_score(
+            y_true, y_pred, average="macro", zero_division=0
+        )
+        recall = recall_score(
+            y_true, y_pred, average="macro", zero_division=0
+        )
+
+        mlflow.log_metrics({
+            "train_loss": train_loss / len(train_loader),
+            "val_accuracy": acc,
+            "val_precision": precision,
+            "val_recall": recall
+        }, step=epoch)
+
+        print(
+            f"Epoch {epoch+1}: "
+            f"acc={acc:.4f}, "
+            f"prec={precision:.4f}, "
+            f"recall={recall:.4f}"
+        )
+
+    # ------------------
+    # SAVE FOR DVC + MLFLOW
+    # ------------------
+    torch.save(model.state_dict(), MODEL_DIR / "model.pth")
+    mlflow.pytorch.log_model(model, "model")

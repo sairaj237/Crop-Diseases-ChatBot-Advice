@@ -1,0 +1,138 @@
+{
+  "diseases": [
+    {
+      "name": "Healthy",
+      "description": "Sugarcane plant showing no visible disease symptoms.",
+      "symptoms": [
+        "Uniform green leaves",
+        "Normal growth",
+        "No discoloration or lesions"
+      ],
+      "care_guidelines": [
+        "Maintain proper irrigation schedule",
+        "Apply balanced NPK fertilizers",
+        "Ensure good drainage",
+        "Regular field inspection for early disease detection"
+      ],
+      "prevention": [
+        "Use certified healthy seed material",
+        "Maintain soil fertility",
+        "Follow recommended agronomic practices"
+      ],
+      "is_curable": true,
+      "severity": "None",
+      "affected_parts": ["Leaves", "Stalk"]
+    },
+
+    {
+      "name": "RedRot",
+      "scientific_name": "Colletotrichum falcatum",
+      "symptoms": [
+        "Reddish lesions on leaves and stalks",
+        "Red discoloration of internal tissues with white patches",
+        "Drying and wilting of leaves",
+        "Poor cane formation"
+      ],
+      "causes": [
+        "Fungal infection (Colletotrichum falcatum)",
+        "High humidity and warm temperatures",
+        "Infected seed material"
+      ],
+      "treatment": [
+        "Remove and destroy infected clumps",
+        "Apply recommended fungicides",
+        "Avoid ratooning infected fields"
+      ],
+      "prevention": [
+        "Use resistant varieties",
+        "Plant disease-free seed cane",
+        "Ensure proper drainage",
+        "Practice crop rotation"
+      ],
+      "is_curable": true,
+      "severity": "High",
+      "affected_parts": ["Leaves", "Stalk", "Buds"]
+    },
+
+    {
+      "name": "Rust",
+      "scientific_name": "Puccinia melanocephala",
+      "symptoms": [
+        "Brown to orange pustules on leaves",
+        "Yellowing of surrounding leaf tissue",
+        "Premature leaf drying"
+      ],
+      "causes": [
+        "Fungal infection (Puccinia species)",
+        "High moisture and cool temperatures",
+        "Dense crop canopy"
+      ],
+      "treatment": [
+        "Apply recommended fungicides",
+        "Remove heavily infected leaves"
+      ],
+      "prevention": [
+        "Grow rust-resistant varieties",
+        "Ensure proper plant spacing",
+        "Avoid excessive nitrogen fertilization"
+      ],
+      "is_curable": true,
+      "severity": "Medium",
+      "affected_parts": ["Leaves"]
+    },
+
+    {
+      "name": "Mosaic",
+      "scientific_name": "Sugarcane mosaic virus (SCMV)",
+      "symptoms": [
+        "Light and dark green mosaic patterns on leaves",
+        "Leaf distortion",
+        "Reduced plant vigor"
+      ],
+      "causes": [
+        "Viral infection (SCMV)",
+        "Transmission by aphids",
+        "Use of infected planting material"
+      ],
+      "treatment": [
+        "Remove and destroy infected plants",
+        "Control aphid populations"
+      ],
+      "prevention": [
+        "Use virus-free seed material",
+        "Control insect vectors",
+        "Avoid planting near infected fields"
+      ],
+      "is_curable": false,
+      "severity": "High",
+      "affected_parts": ["Leaves"]
+    },
+
+    {
+      "name": "Yellow",
+      "scientific_name": "Sugarcane yellow leaf virus (SCYLV)",
+      "symptoms": [
+        "Yellowing of midrib on mature leaves",
+        "Leaf tip drying",
+        "Reduced cane yield"
+      ],
+      "causes": [
+        "Viral infection (SCYLV)",
+        "Transmission by aphids",
+        "Infected seed cane"
+      ],
+      "treatment": [
+        "Remove infected plants",
+        "Manage aphid population"
+      ],
+      "prevention": [
+        "Use certified virus-free seed cane",
+        "Regular monitoring and rogueing",
+        "Control vector insects"
+      ],
+      "is_curable": false,
+      "severity": "Medium",
+      "affected_parts": ["Leaves", "Midrib"]
+    }
+  ]
+}
