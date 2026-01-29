@@ -13,9 +13,9 @@ from pathlib import Path
 # ----------------------------
 # CONFIG
 # ----------------------------
-MODEL_URI = "models:/sugarcane_disease_classifier@staging"
+MODEL_URI = "models:/sugarcane_disease_classifier@production"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CONF_THRESHOLD = 0.9
+
 
 CLASS_NAMES = ["Healthy", "Mosaic", "RedRot", "Rust", "Yellow"]
 
@@ -64,20 +64,23 @@ def generate_gradcam(img, class_idx):
     x = transform(img).unsqueeze(0).to(DEVICE)
     x.requires_grad = True
 
-    feats, grads = [], []
+    features, gradients = [], []
 
-    def f_hook(_, __, output): feats.append(output)
-    def b_hook(_, grad_in, grad_out): grads.append(grad_out[0])
+    def forward_hook(_, __, output):
+        features.append(output)
 
-    target_layer = model.blocks[-3]   # 🔑 earlier spatial layer
-    h1 = target_layer.register_forward_hook(f_hook)
-    h2 = target_layer.register_full_backward_hook(b_hook)
+    def backward_hook(_, grad_in, grad_out):
+        gradients.append(grad_out[0])
+
+    target_layer = model.layer4  # ✅ ResNet18 correct layer
+    h1 = target_layer.register_forward_hook(forward_hook)
+    h2 = target_layer.register_full_backward_hook(backward_hook)
 
     out = model(x)
     out[0, class_idx].backward()
 
-    fmap = feats[0][0]
-    grad = grads[0].mean(dim=[1, 2])
+    fmap = features[0][0]
+    grad = gradients[0].mean(dim=[1, 2])
 
     cam = torch.zeros(fmap.shape[1:], device=DEVICE)
     for i, w in enumerate(grad):
@@ -103,6 +106,7 @@ def generate_gradcam(img, class_idx):
     h2.remove()
     return overlay
 
+
 # ----------------------------
 # LLM (SAFE)
 # ----------------------------
@@ -115,17 +119,56 @@ def clean_text(text):
     )
 
 def get_llm_advice(diagnosis):
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "gemma3",
-                "prompt": f"Treatment and prevention for sugarcane disease: {diagnosis}",
-                "stream": False
-            }
-        )
+    """Get advice from LLM based on the diagnosis"""
+    try:
+        # Prepare the prompt based on whether it's a normal leaf or disease
+        if "normal" in diagnosis.lower():
+            prompt = """You are a sugarcane cultivation expert. Provide a SINGLE, COMPLETE response for a healthy sugarcane plant. 
+            
+            RULES:
+            - DO NOT ask any questions
+            - DO NOT request additional information
+            - Provide ALL necessary information in this response
+            - Keep it under 250 words
+            - Use clear section headers
+            - Be specific to sugarcane
+            
+            FORMAT:
+            ✅ **Healthy Sugarcane Plant**
+            
+            ⚠️ **Watch For**
+            - [key warning signs]
+            
+            Remember: This is a COMPLETE response. Do not ask for more information.
+            """
+        else:
+            prompt = f"""You are an expert in plant pathology. Provide specific care advice for a plant with the following condition: {diagnosis}.
+            
+            Your response should be factual and practical, including:
+            1. A brief description of the condition
+            2. Recommended treatment steps
+            3. Preventive measures
+            4. When to consult a professional
+            
+            Be concise but thorough in your advice. If you're not certain about the diagnosis, say so."""
+
+        
+        # Prepare the request to Ollama
+        data = {
+            "model": "gemma3",
+            "prompt": prompt,
+            "stream": False
+        }
+        
+        # Make the request
+        response = requests.post("http://localhost:11434/api/generate", json=data)
         response.raise_for_status()
         raw = response.json().get("response", "")
         return clean_text(raw)
+
+    except Exception as e:
+        print(f"Error getting advice: {str(e)}")
+        return "Error generating advice. Please try again later."
 
 
 # ----------------------------
@@ -134,16 +177,13 @@ def get_llm_advice(diagnosis):
 def analyze_image(img):
     disease, conf = predict_disease(img)
     idx = CLASS_NAMES.index(disease)
-    heatmap = generate_gradcam(img, idx)
 
-    if conf < CONF_THRESHOLD:
-        diagnosis_text = f"Uncertain (Confidence: {conf*100:.1f}%)"
-        advice = "⚠️ Model is not confident. Upload a clearer image focusing on the diseased area."
-    else:
-        diagnosis_text = f"{disease} (Confidence: {conf*100:.1f}%)"
-        advice = get_llm_advice(disease)
+    heatmap = generate_gradcam(img, idx)
+    diagnosis_text = f"{disease} (Confidence: {conf*100:.1f}%)"
+    advice = get_llm_advice(disease)
 
     return diagnosis_text, heatmap, advice
+
 
 def get_disease_info(disease_name):
     """Get information about a disease from the knowledge base"""
@@ -161,81 +201,58 @@ def get_disease_info(disease_name):
     return None
 
 def respond_to_question(question, diagnosis):
-        """Generate a response to the user's question using the knowledge base and LLM"""
-        if not diagnosis:
-            return "Please analyze an image first so I can provide relevant advice."
-        
-        try:
-            # Get the base diagnosis without the confidence score
-            base_diagnosis = diagnosis.split('(')[0].strip()
-            
-            # If the question is empty or very short, ask for more details
-            if not question or len(question.strip()) < 3:
-                return "Please ask a specific question about the diagnosis or treatment options."
-            
-            # Get disease information from knowledge base
-            disease_info = get_disease_info(base_diagnosis)
-            
-            # Common question patterns and their corresponding responses
-            question_lower = question.lower()
-            
-            if disease_info:
-                # Handle specific question types using knowledge base
-                if any(q in question_lower for q in ['cure', 'treat', 'treatment', 'solution']):
-                    if 'treatment' in disease_info:
-                        return "\n".join(["✅ Treatment options:"] + [f"• {t}" for t in disease_info['treatment']])
-                
-                elif any(q in question_lower for q in ['prevent', 'prevention', 'avoid']):
-                    if 'prevention' in disease_info:
-                        return "\n".join(["🛡️ Prevention measures:"] + [f"• {p}" for p in disease_info['prevention']])
-                
-                elif any(q in question_lower for q in ['symptom', 'sign', 'look like']):
-                    if 'symptoms' in disease_info:
-                        return "\n".join(["⚠️ Common symptoms:"] + [f"• {s}" for s in disease_info['symptoms']])
-                
-                elif any(q in question_lower for q in ['cause', 'reason', 'why']):
-                    if 'causes' in disease_info:
-                        return "\n".join(["🔍 Possible causes:"] + [f"• {c}" for c in disease_info['causes']])
-                
-                elif 'curable' in question_lower:
-                    status = "Yes" if disease_info.get('is_curable', False) else "No"
-                    return f"Curable: {status}. " + ("Early treatment improves success rates." if status == "Yes" else "Focus on prevention and management.")
-            
-            # If no specific pattern matched or disease not found, use LLM with context
-            context = json.dumps(disease_info, indent=2) if disease_info else "No specific information available"
-            
-            prompt = f"""You are a sugarcane disease expert. Use the following information to answer the question.
-            
-            Disease: {base_diagnosis}
-            Context: {context}
-            
-            Question: {question}
-            
-            Guidelines:
-            - Be specific and concise (under 150 words)
-            - Only use information from the provided context
-            - If the question can't be answered from context, say so
-            - Do not make up information
-            - Format lists with bullet points
-            - Do not ask follow-up questions
-            """
-            
-            # Make the API call to Ollama
-            data = {
-                "model": "gemma3",
-                "prompt": prompt,
-                "stream": False,
-                "max_tokens": 300
-            }
-            
-            response = requests.post("http://localhost:11434/api/generate", json=data)
-            response.raise_for_status()
-            result = response.json()
-            return result.get("response", "I couldn't generate a response. Please try again.")
-            
-        except Exception as e:
-            print(f"Error generating response: {str(e)}")
-            return "I'm sorry, I encountered an error while generating a response. Please try again later."
+    """Answer all questions using KB + LLM only (no hardcoding, no NLP)"""
+    if not diagnosis:
+        return "Please analyze an image first."
+
+    if not question or len(question.strip()) < 3:
+        return "Please ask a clear question."
+
+    try:
+        base_diagnosis = diagnosis.split('(')[0].strip()
+        disease_info = get_disease_info(base_diagnosis)
+
+        if not disease_info:
+            return "No knowledge base information available for this disease."
+
+        context = json.dumps(disease_info, indent=2)
+
+        prompt = f"""
+        You are a sugarcane disease expert.
+
+        Use ONLY the information below to answer the question.
+        Keep the answer short and direct (max 3 bullet points or 2 sentences).
+        Do NOT add new information.
+        If the answer is not present, say: "Information not available in knowledge base."
+
+        Disease: {base_diagnosis}
+        Knowledge Base:
+        {context}
+
+        Question: {question}
+        """
+
+        data = {
+            "model": "gemma3",
+            "prompt": prompt,
+            "stream": False,
+            "max_tokens": 150
+        }
+
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json=data
+        )
+        response.raise_for_status()
+
+        raw = response.json().get("response", "")
+        return clean_text(raw)
+
+    except Exception as e:
+        print(f"Error generating response: {str(e)}")
+        return "Error generating response. Please try again."
+
+
 
 
 # ----------------------------
